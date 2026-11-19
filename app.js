@@ -373,7 +373,7 @@ function viewConfig() {
 /* ---------- JOIN ---------- */
 function viewJoin() {
   const J = st.join;
-  const inp = h('input', { id: 'pass', type: 'password', class: 'field', autocomplete: 'off', autocapitalize: 'off', placeholder: '例:ひがしやまと2027さくら',
+  const inp = h('input', { id: 'pass', type: 'password', class: 'field', autocomplete: 'off', autocapitalize: 'off', placeholder: '例:blue-river-2027',
     onkeydown: e => { if (e.key === 'Enter') { e.preventDefault(); tryJoin(inp.value, false); } } });
   const wrap = h('div', { class: 'join' },
     h('h1', null, 'ふたりの家計簿'),
@@ -388,7 +388,7 @@ function viewJoin() {
   }
   const show = h('input', { id: 'showpw', type: 'checkbox', onchange: e => { inp.type = e.target.checked ? 'text' : 'password'; } });
   wrap.append(h('div', { class: 'card stack' },
-    h('label', { class: 'f', for: 'pass' }, '合言葉(8文字以上)', inp),
+    h('label', { class: 'f', for: 'pass' }, '合言葉(英数字で8文字以上がおすすめ)', inp),
     h('label', { class: 'showpw', for: 'showpw' }, show, '合言葉を表示する'),
     J.error ? h('div', { class: 'err', role: 'alert' }, J.error) : null,
     h('button', { class: 'btn', disabled: J.busy, onclick: () => tryJoin(inp.value, false) }, J.busy ? '確認中…' : 'はじめる / 参加する'),
