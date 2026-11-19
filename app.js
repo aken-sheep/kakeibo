@@ -20,7 +20,7 @@ const DEFAULT_SETTINGS = {
     { id: 'food', name: '食費', budget: 45000, fixed: false, personal: false },
     { id: 'car', name: 'カーシェア', budget: 40000, fixed: false, personal: false },
     { id: 'util', name: '水道光熱費', budget: 30000, fixed: false, personal: false },
-    { id: 'fun', name: '娯楽費・交際費', budget: 30000, fixed: false, personal: true },
+    { id: 'fun', name: '娯楽費・交際費', budget: 30000, fixed: false, personal: true, split: { a: 15000, b: 15000 } },
     { id: 'daily', name: '日用品・服・美容', budget: 25000, fixed: false, personal: false },
     { id: 'safety', name: '保険・医療・予備費', budget: 20000, fixed: false, personal: false },
     { id: 'phone', name: '通信費', budget: 13000, fixed: true, personal: false },
@@ -122,8 +122,16 @@ function normSettings(raw) {
   d.startMonth = typeof raw.startMonth === 'string' && /^\d{4}-\d{2}$/.test(raw.startMonth) ? raw.startMonth : null;
   if (raw.people && typeof raw.people === 'object') d.people = { a: String(raw.people.a || '夫').slice(0, 12), b: String(raw.people.b || '妻').slice(0, 12) };
   if (Array.isArray(raw.categories) && raw.categories.length) {
-    d.categories = raw.categories.filter(c => c && typeof c.id === 'string').slice(0, 30).map(c => ({
-      id: c.id.slice(0, 40), name: String(c.name || '項目').slice(0, 20), budget: num(c.budget, 0, 0, 1e8), fixed: !!c.fixed, personal: !!c.personal }));
+    d.categories = raw.categories.filter(c => c && typeof c.id === 'string').slice(0, 30).map(c => {
+      const o = { id: c.id.slice(0, 40), name: String(c.name || '項目').slice(0, 20), budget: num(c.budget, 0, 0, 1e8), fixed: !!c.fixed, personal: !!c.personal };
+      if (o.personal) {
+        // each person's own allowance; older data without it is split in half
+        const sp = c.split && typeof c.split === 'object' ? c.split : null;
+        const a = sp ? num(sp.a, 0, 0, 1e8) : Math.round(o.budget / 2), b = sp ? num(sp.b, 0, 0, 1e8) : o.budget - Math.round(o.budget / 2);
+        o.split = { a, b }; o.budget = a + b;
+      }
+      return o;
+    });
   }
   if (raw.fixedOverrides && typeof raw.fixedOverrides === 'object') {
     d.fixedOverrides = {};
@@ -479,7 +487,7 @@ function viewHome() {
   for (const slot of ['a', 'b']) {
     const p = h('div', { class: 'p stack', style: 'gap:6px' }, h('b', null, personName(slot)));
     for (const pc of c.cats.filter(x => x.personal)) {
-      const allow = Math.round(pc.budget / 2); const used = pc.by[slot];
+      const allow = pc.split ? pc.split[slot] : Math.round(pc.budget / 2); const used = pc.by[slot];
       p.append(h('div', { class: 'small' }, pc.name), barEl(used, allow), h('div', { class: 'small num' + (used > allow ? ' left over' : '') }, yen(used) + ' / ' + yen(allow)));
     }
     p.append(h('div', { class: 'small muted num' }, '支払い合計 ' + yen(c.payers[slot])));
@@ -708,12 +716,17 @@ function viewSettings() {
   const drawCats = () => {
     catBox.replaceChildren(); d.categories.forEach((c, i) => {
       const id = 'sc' + i;
+      const budgetIn = h('input', { id: id + 'b', class: 'field num', 'aria-label': c.name + 'の予算', type: 'number', inputmode: 'numeric', value: String(c.budget), disabled: c.personal, oninput: e => { c.budget = Math.max(0, Math.round(Number(e.target.value) || 0)); upd(); } });
+      const splitIn = slot => h('label', { class: 'f', for: id + 's' + slot }, personName(slot) + 'の分',
+        h('input', { id: id + 's' + slot, class: 'num', type: 'number', inputmode: 'numeric', value: String(c.split ? c.split[slot] : 0),
+          oninput: e => { c.split[slot] = Math.max(0, Math.round(Number(e.target.value) || 0)); c.budget = c.split.a + c.split.b; budgetIn.value = String(c.budget); upd(); } }));
       catBox.append(h('div', { class: 'setcat' },
         h('input', { id: id + 'n', class: 'field', 'aria-label': '項目名', value: c.name, maxlength: '20', oninput: e => { c.name = e.target.value; } }),
-        h('input', { id: id + 'b', class: 'field num', 'aria-label': c.name + 'の予算', type: 'number', inputmode: 'numeric', value: String(c.budget), oninput: e => { c.budget = Math.max(0, Math.round(Number(e.target.value) || 0)); upd(); } }),
+        budgetIn,
+        c.personal ? h('div', { class: 'two', style: 'grid-column:1/-1' }, splitIn('a'), splitIn('b')) : null,
         h('div', { class: 'opts' },
           h('label', { class: 'row', for: id + 'f' }, h('input', { id: id + 'f', type: 'checkbox', checked: c.fixed, onchange: e => { c.fixed = e.target.checked; } }), '固定費(毎月自動)'),
-          h('label', { class: 'row', for: id + 'p' }, h('input', { id: id + 'p', type: 'checkbox', checked: c.personal, onchange: e => { c.personal = e.target.checked; } }), '1人ずつ(半分ずつ)'),
+          h('label', { class: 'row', for: id + 'p' }, h('input', { id: id + 'p', type: 'checkbox', checked: c.personal, onchange: e => { c.personal = e.target.checked; if (c.personal && !c.split) { const a = Math.round(c.budget / 2); c.split = { a, b: c.budget - a }; } if (!c.personal) delete c.split; drawCats(); upd(); } }), '1人ずつ(夫と妻で別々の金額)'),
           h('button', { class: 'btn danger sm', style: 'margin-left:auto', onclick: () => { d.categories.splice(i, 1); drawCats(); upd(); } }, '削除'))));
     });
   };
