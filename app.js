@@ -12,7 +12,8 @@ const ROOM_KEY = 'futari-kakeibo.room';
 const SALT = 'futari-kakeibo-v1';
 const CAT_COLORS = ['#1d6a55','#2f7fb8','#c0612b','#7a5bb0','#b8862f','#3a9a8c','#a8476b','#5d7a2f','#4f5fa8','#8a6a52','#4a8f5b','#9a5a2a'];
 const DEFAULT_SETTINGS = {
-  takeHome: 340000, nisa: 20000, startDay: 1, startMonth: null,
+  takeHome: 340000, nisa: 20000, startDay: 7, startMonth: null,
+  periodStarts: {}, // per-month start date overrides: { '2026-11': '2026-11-08' }
   people: { a: '夫', b: '妻' },
   categories: [
     { id: 'rent', name: '家賃', budget: 90000, fixed: true, personal: false },
@@ -37,7 +38,7 @@ const st = {
   settings: clone(DEFAULT_SETTINGS), settingsSaved: false,
   expenses: [], loading: true, note: '',
   tab: 'home', period: null,
-  input: { cat: null, amount: '', payer: null, date: null, note: '' },
+  input: { cat: null, amount: '', payer: null, date: null, note: '', month: null },
   hist: { cat: 'all', payer: 'all' },
   car: { h6: 4, h12: 0, h24: 0, night: 0, shortH: 3, km: 0 },
   join: { busy: false, error: '', confirmCreate: null }
@@ -83,15 +84,29 @@ function loadRoom() { try { return localStorage.getItem(ROOM_KEY); } catch (e) {
 function saveRoom(id) { try { id ? localStorage.setItem(ROOM_KEY, id) : localStorage.removeItem(ROOM_KEY); } catch (e) {} }
 
 /* ---------- periods ---------- */
+// One shared monthly cycle (default: 7th to the 6th of next month, named after the month it starts in).
+// Each month's start can be moved day by day; a month ends the day before the next one starts.
+const validMonth = v => typeof v === 'string' && /^\d{4}-\d{2}$/.test(v);
+const validDate = v => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v);
+function defaultStart(key) { const [Y, M] = key.split('-').map(Number); return fmt(new Date(Y, M - 1, S().startDay || 1)); }
+function startOf(key) { const o = (S().periodStarts || {})[key]; return validDate(o) ? o : defaultStart(key); }
+function addDays(ds, n) { const [y, m, d] = ds.split('-').map(Number); return fmt(new Date(y, m - 1, d + n)); }
+function endOf(key) { return addDays(startOf(shiftKey(key, 1)), -1); }
 function keyOf(ds) {
-  const [y, m, d] = ds.split('-').map(Number); const sd = S().startDay; let Y = y, M = m;
-  if (d < sd) { M--; if (M < 1) { M = 12; Y--; } }
-  return Y + '-' + pad(M);
+  const [y, m, d] = ds.split('-').map(Number); let k = y + '-' + pad(m);
+  if (d < (S().startDay || 1)) k = shiftKey(k, -1);
+  for (let i = 0; i < 3; i++) {
+    if (ds < startOf(k)) k = shiftKey(k, -1);
+    else if (ds >= startOf(shiftKey(k, 1))) k = shiftKey(k, 1);
+    else break;
+  }
+  return k;
 }
+function keyOfExp(e) { return validMonth(e.month) ? e.month : keyOf(e.date); }
+function md(ds) { return Number(ds.slice(5, 7)) + '/' + Number(ds.slice(8)); }
+function periodRange(key) { return md(startOf(key)) + ' 〜 ' + md(endOf(key)); }
 function shiftKey(key, n) { let [Y, M] = key.split('-').map(Number); M += n; while (M > 12) { M -= 12; Y++; } while (M < 1) { M += 12; Y--; } return Y + '-' + pad(M); }
-function rangeOf(key) { const [Y, M] = key.split('-').map(Number); const sd = S().startDay; return [new Date(Y, M - 1, sd), new Date(Y, M, sd - 1)]; }
 function periodTitle(key) { const [Y, M] = key.split('-').map(Number); return Y + '年' + M + '月'; }
-function periodRange(key) { const [s, e] = rangeOf(key); return (s.getMonth() + 1) + '/' + s.getDate() + ' 〜 ' + (e.getMonth() + 1) + '/' + e.getDate(); }
 const curKey = () => keyOf(today());
 const startMonth = () => S().startMonth || curKey();
 
@@ -101,7 +116,9 @@ function normSettings(raw) {
   const num = (v, f, min, max) => { v = Number(v); return Number.isFinite(v) ? Math.min(max, Math.max(min, Math.round(v))) : f; };
   d.takeHome = num(raw.takeHome, d.takeHome, 0, 1e8);
   d.nisa = num(raw.nisa, d.nisa, 0, 1e7);
-  d.startDay = num(raw.startDay, 1, 1, 28);
+  d.startDay = num(raw.startDay, 7, 1, 28);
+  d.periodStarts = {};
+  if (raw.periodStarts && typeof raw.periodStarts === 'object') for (const k in raw.periodStarts) { if (validMonth(k) && validDate(raw.periodStarts[k])) d.periodStarts[k] = raw.periodStarts[k]; }
   d.startMonth = typeof raw.startMonth === 'string' && /^\d{4}-\d{2}$/.test(raw.startMonth) ? raw.startMonth : null;
   if (raw.people && typeof raw.people === 'object') d.people = { a: String(raw.people.a || '夫').slice(0, 12), b: String(raw.people.b || '妻').slice(0, 12) };
   if (Array.isArray(raw.categories) && raw.categories.length) {
@@ -121,13 +138,13 @@ function normExpense(id, x) {
   if (!x || typeof x !== 'object') return null;
   const amount = Number(x.amount);
   if (!Number.isFinite(amount) || typeof x.date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(x.date)) return null;
-  return { id, date: x.date, amount: Math.round(amount), cat: String(x.cat || ''), payer: x.payer === 'b' ? 'b' : 'a', note: String(x.note || '').slice(0, 60), createdAt: Number(x.createdAt) || 0 };
+  return { id, date: x.date, amount: Math.round(amount), cat: String(x.cat || ''), payer: x.payer === 'b' ? 'b' : 'a', note: String(x.note || '').slice(0, 60), createdAt: Number(x.createdAt) || 0, month: validMonth(x.month) ? x.month : null };
 }
 
 /* ---------- computations ---------- */
 function compute(key) {
   const s = S(); const active = key >= startMonth();
-  const exps = st.expenses.filter(e => keyOf(e.date) === key);
+  const exps = st.expenses.filter(e => keyOfExp(e) === key);
   const ov = (s.fixedOverrides || {})[key] || {};
   const cats = s.categories.map(c => {
     const mine = exps.filter(e => e.cat === c.id);
@@ -188,7 +205,7 @@ function enterRoom(id) {
     st.settings = snap.exists() ? normSettings(snap.data()) : clone(DEFAULT_SETTINGS);
     st.settingsSaved = snap.exists(); render();
   }, fail));
-  const now = new Date(); const since = fmt(new Date(now.getFullYear() - 1, now.getMonth() - 1, 1));
+  const now = new Date(); const since = fmt(new Date(now.getFullYear() - 1, now.getMonth() - 2, 1));
   unsubs.push(onSnapshot(query(expCol(id), where('date', '>=', since), orderBy('date', 'desc'), limit(1000)), q => {
     st.expenses = q.docs.map(d => normExpense(d.id, d.data())).filter(Boolean);
     if (!q.metadata.fromCache) { st.loading = false; clearTimeout(timer); if (/時間がかかって/.test(st.note)) st.note = ''; }
@@ -216,13 +233,13 @@ function ensureSettings() { if (!st.settingsSaved) { const n = clone(S()); if (!
 function addExpense(e) {
   ensureSettings();
   const ref = doc(expCol());
-  const body = { date: e.date, amount: Math.round(e.amount), cat: e.cat, payer: e.payer, note: e.note || '', createdAt: e.createdAt || Date.now() };
+  const body = { date: e.date, amount: Math.round(e.amount), cat: e.cat, payer: e.payer, note: e.note || '', createdAt: e.createdAt || Date.now(), month: validMonth(e.month) ? e.month : null };
   setDoc(ref, body).catch(writeErr);
   return ref.id;
 }
 function updateExpense(id, e) {
   const cur = st.expenses.find(x => x.id === id) || {};
-  setDoc(doc(expCol(), id), { date: e.date, amount: Math.round(e.amount), cat: e.cat, payer: e.payer, note: e.note || '', createdAt: cur.createdAt || Date.now() }).catch(writeErr);
+  setDoc(doc(expCol(), id), { date: e.date, amount: Math.round(e.amount), cat: e.cat, payer: e.payer, note: e.note || '', createdAt: cur.createdAt || Date.now(), month: validMonth(e.month) ? e.month : null }).catch(writeErr);
 }
 function deleteExpense(id) { deleteDoc(doc(expCol(), id)).catch(writeErr); }
 function setMySlot(slot) {
@@ -334,7 +351,7 @@ function renderTabs() {
 }
 function go(tab, opts) {
   st.tab = tab;
-  if (tab === 'input') { st.input.cat = (opts && opts.cat) || null; st.input.amount = ''; st.input.note = ''; st.input.date = today(); st.input.payer = mySlot() || st.input.payer || 'a'; }
+  if (tab === 'input') { st.input.cat = (opts && opts.cat) || null; st.input.amount = ''; st.input.note = ''; st.input.date = today(); st.input.month = null; st.input.payer = mySlot() || st.input.payer || 'a'; }
   render(true); window.scrollTo(0, 0);
 }
 
@@ -402,8 +419,35 @@ function periodNav() {
   const k = st.period;
   return h('div', { class: 'period' },
     h('button', { class: 'iconbtn', 'aria-label': '前の月', onclick: () => { st.period = shiftKey(k, -1); render(true); } }, '‹'),
-    h('div', null, h('div', { class: 'title' }, periodTitle(k)), h('div', { class: 'range num' }, periodRange(k) + (k === curKey() ? '(今月)' : ''))),
+    h('button', { class: 'periodbtn', 'aria-label': periodTitle(k) + 'の期間を変更', onclick: () => editPeriod(k) }, h('div', { class: 'title' }, periodTitle(k) + '分'), h('div', { class: 'range num' }, periodRange(k) + (k === curKey() ? '(今月)' : '') + ' ✎')),
     h('button', { class: 'iconbtn', 'aria-label': '次の月', onclick: () => { st.period = shiftKey(k, 1); render(true); } }, '›'));
+}
+// Move the start day one day at a time; the end moves with it (always "start day to the day before next month's start day").
+function editPeriod(k) {
+  modal((sh, close) => {
+    let day = S().startDay || 1;
+    const preview = h('div', { class: 'title num', style: 'text-align:center;font-family:var(--font-display);font-weight:900;font-size:24px' });
+    const sub = h('div', { class: 'small muted', style: 'text-align:center' });
+    const [Y, M] = k.split('-').map(Number);
+    const draw = () => {
+      const s0 = new Date(Y, M - 1, day), e0 = new Date(Y, M, day - 1);
+      preview.textContent = (s0.getMonth() + 1) + '/' + s0.getDate() + ' 〜 ' + (e0.getMonth() + 1) + '/' + e0.getDate();
+      sub.textContent = '毎月' + day + '日から翌月' + (day > 1 ? (day - 1) + '日' : '末日') + 'まで';
+      minus.disabled = day <= 1; plus.disabled = day >= 28;
+    };
+    const minus = h('button', { class: 'iconbtn', 'aria-label': '1日前にずらす', onclick: () => { if (day > 1) { day--; draw(); } } }, '−');
+    const plus = h('button', { class: 'iconbtn', 'aria-label': '1日後ろにずらす', onclick: () => { if (day < 28) { day++; draw(); } } }, '+');
+    sh.append(h('div', { class: 'stack' }, h('h2', null, '1か月の期間'),
+      h('div', { class: 'small muted' }, '「−」「+」で始まりを1日ずつずらせます。終わりも一緒にずれます。すべての月に反映されます。'),
+      h('div', { class: 'period' }, minus, h('div', null, preview, sub), plus),
+      h('button', { class: 'btn', onclick: () => {
+        const n = clone(S()); n.startDay = day; n.periodStarts = {};
+        if (!n.startMonth) n.startMonth = curKey();
+        close(); saveSettings(n); st.period = curKey(); render(true); toast('毎月' + day + '日始まりにしました');
+      } }, '保存'),
+      h('button', { class: 'btn ghost', onclick: close }, 'やめる')));
+    draw();
+  });
 }
 function barEl(spent, budget, fixed) {
   const r = budget > 0 ? spent / budget : (spent > 0 ? 1.01 : 0);
@@ -462,7 +506,19 @@ function editFixed(cat) {
 }
 
 /* ---------- INPUT ---------- */
-let liveRecent = null, liveSend = null, liveRemain = null, liveGrid = null;
+let liveRecent = null, liveSend = null, liveRemain = null, liveGrid = null, liveMonth = null;
+function inputKey() { const I = st.input; return validMonth(I.month) ? I.month : keyOf(I.date || today()); }
+function monthLabel(k) { return Number(k.slice(5)) + '月分'; }
+function monthSelect(id, autoKey, current, onChange) {
+  const opts = [h('option', { value: '' }, '自動(' + monthLabel(autoKey) + ')')];
+  for (let i = -2; i <= 2; i++) { const k = shiftKey(autoKey, i); if (i !== 0) opts.push(h('option', { value: k, selected: current === k }, periodTitle(k) + '分')); }
+  return h('select', { id, class: 'field', onchange: e => onChange(e.target.value || null) }, ...opts);
+}
+function drawMonth() {
+  if (!liveMonth) return; const I = st.input;
+  const auto = keyOf(I.date || today());
+  liveMonth.replaceChildren(h('label', { class: 'f', for: 'in-month' }, '何月分に入れるか', monthSelect('in-month', auto, I.month, v => { I.month = v; updateInputLive(); })));
+}
 function viewInput() {
   const s = S(); const I = st.input;
   if (!I.payer) I.payer = mySlot() || 'a';
@@ -481,11 +537,12 @@ function viewInput() {
   wrap.append(h('div', { class: 'amount' }, amt, h('span', { style: 'font-weight:700' }, '円')));
   liveRemain = h('div', { class: 'small muted num', style: 'margin-top:-4px' }); wrap.append(liveRemain);
   const seg = h('div', { class: 'seg', role: 'group', 'aria-label': '支払った人' });
-  for (const slot of ['a', 'b']) seg.append(h('button', { 'aria-pressed': I.payer === slot ? 'true' : 'false', onclick: () => { I.payer = slot; seg.querySelectorAll('button').forEach((b, i) => b.setAttribute('aria-pressed', (i === 0 ? 'a' : 'b') === slot ? 'true' : 'false')); } }, personName(slot) + 'が払った'));
+  for (const slot of ['a', 'b']) seg.append(h('button', { 'aria-pressed': I.payer === slot ? 'true' : 'false', onclick: () => { I.payer = slot; seg.querySelectorAll('button').forEach((b, i) => b.setAttribute('aria-pressed', (i === 0 ? 'a' : 'b') === slot ? 'true' : 'false')); updateInputLive(); } }, personName(slot) + 'が払った'));
   wrap.append(seg);
   wrap.append(h('div', { class: 'two' },
-    h('label', { class: 'f', for: 'in-date' }, '日付', h('input', { id: 'in-date', type: 'date', value: I.date || today(), onchange: e => { I.date = e.target.value || today(); updateInputLive(); } })),
+    h('label', { class: 'f', for: 'in-date' }, '日付', h('input', { id: 'in-date', type: 'date', value: I.date || today(), onchange: e => { I.date = e.target.value || today(); I.month = null; updateInputLive(); } })),
     h('label', { class: 'f', for: 'in-note' }, 'メモ(任意)', h('input', { id: 'in-note', type: 'text', maxlength: '40', value: I.note, placeholder: 'お店など', oninput: e => { I.note = e.target.value; }, onkeydown: e => { if (e.key === 'Enter') { e.preventDefault(); submit(); } } }))));
+  liveMonth = h('div'); wrap.append(liveMonth);
   liveSend = h('button', { class: 'btn', onclick: submit }); wrap.append(liveSend);
   liveRecent = h('div', { class: 'stack', style: 'gap:0' });
   wrap.append(h('h2', { style: 'margin-top:8px' }, '最近の入力'), h('div', { class: 'card', style: 'padding:2px 12px' }, liveRecent));
@@ -494,7 +551,7 @@ function viewInput() {
 }
 function drawGrid() {
   const s = S(); const I = st.input; if (!liveGrid) return;
-  const c = compute(keyOf(I.date || today()));
+  const c = compute(inputKey());
   liveGrid.replaceChildren();
   for (const cat of s.categories.filter(x => !x.fixed)) {
     const cc = c.cats.find(x => x.id === cat.id);
@@ -510,11 +567,11 @@ function drawGrid() {
 }
 function updateInputLive() {
   const I = st.input;
-  drawGrid();
+  drawGrid(); drawMonth();
   if (liveSend) { const cat = catById(I.cat); const n = Number(I.amount) || 0; liveSend.disabled = !cat || !n; liveSend.textContent = cat && n ? cat.name + ' ' + yen(n) + ' を記録' : (cat ? '金額を入力してください' : '項目を選んでください'); }
   if (liveRemain) {
     const cat = catById(I.cat);
-    if (cat) { const c = compute(keyOf(I.date || today())).cats.find(x => x.id === cat.id); const n = Number(I.amount) || 0; const after = c.budget - c.spent - n; liveRemain.textContent = cat.name + ':記録後の残り ' + yen(after) + (after < 0 ? '(オーバー)' : ''); liveRemain.style.color = after < 0 && !cat.fixed ? 'var(--bad)' : ''; }
+    if (cat) { const c = compute(inputKey()).cats.find(x => x.id === cat.id); const n = Number(I.amount) || 0; const after = c.budget - c.spent - n; liveRemain.textContent = cat.name + ':記録後の残り ' + yen(after) + (after < 0 ? '(オーバー)' : ''); liveRemain.style.color = after < 0 && !cat.fixed ? 'var(--bad)' : ''; }
     else liveRemain.textContent = '';
   }
   if (liveRecent) {
@@ -525,8 +582,8 @@ function updateInputLive() {
 function submit() {
   const I = st.input; const cat = catById(I.cat); const n = Number(I.amount) || 0;
   if (!cat || !n) return;
-  const id = addExpense({ date: I.date || today(), amount: n, cat: cat.id, payer: I.payer || mySlot() || 'a', note: I.note.trim() });
-  I.amount = ''; I.note = '';
+  const id = addExpense({ date: I.date || today(), amount: n, cat: cat.id, payer: I.payer || mySlot() || 'a', note: I.note.trim(), month: I.month });
+  I.amount = ''; I.note = ''; I.month = null;
   const amt = document.getElementById('amt'); if (amt) { amt.value = ''; amt.focus(); }
   const note = document.getElementById('in-note'); if (note) note.value = '';
   toast(cat.name + ' ' + yen(n) + ' を記録しました', () => { deleteExpense(id); toast('取り消しました'); });
@@ -538,7 +595,7 @@ function entRow(e) {
   const cat = catById(e.cat);
   return h('button', { class: 'ent', onclick: () => editExpense(e) },
     h('span', { class: 'dot', style: 'background:' + catColor(e.cat) }),
-    h('div', { class: 'mid' }, h('div', null, (cat ? cat.name : '削除された項目') + (e.note ? '・' + e.note : '')), h('div', { class: 'small muted' }, Number(e.date.slice(5, 7)) + '/' + Number(e.date.slice(8)) + '・' + personName(e.payer))),
+    h('div', { class: 'mid' }, h('div', null, (cat ? cat.name : '削除された項目') + (e.note ? '・' + e.note : '')), h('div', { class: 'small muted' }, Number(e.date.slice(5, 7)) + '/' + Number(e.date.slice(8)) + '・' + personName(e.payer) + '・' + monthLabel(keyOfExp(e)) + (e.month ? '(手動)' : ''))),
     h('span', { class: 'amt num' }, yen(e.amount)));
 }
 function viewHistory() {
@@ -572,6 +629,7 @@ function editExpense(e) {
         h('label', { class: 'f', for: 'e-date' }, '日付', h('input', { id: 'e-date', type: 'date', value: f.date, onchange: ev => { f.date = ev.target.value || f.date; } })),
         h('label', { class: 'f', for: 'e-note' }, 'メモ', h('input', { id: 'e-note', type: 'text', maxlength: '40', value: f.note, oninput: ev => { f.note = ev.target.value; } }))),
       seg,
+      h('label', { class: 'f', for: 'e-month' }, '何月分に入れるか', monthSelect('e-month', keyOf(f.date), f.month, v => { f.month = v; })),
       h('button', { class: 'btn', onclick: () => { if (!f.amount) return; close(); updateExpense(e.id, f); toast('保存しました'); } }, '保存'),
       h('button', { class: 'btn danger', onclick: () => { close(); deleteExpense(e.id); toast('削除しました', () => addExpense(e)); } }, 'この記録を削除')));
   });
@@ -668,7 +726,8 @@ function viewSettings() {
       numF('s-take', '2人の手取り(月)', 'takeHome', '住宅補助を含めた金額'),
       numF('s-nisa', 'NISAの積み立て(月)', 'nisa'),
       h('div', { class: 'two' },
-        h('label', { class: 'f', for: 's-day' }, '月の始まりの日', h('input', { id: 's-day', type: 'number', inputmode: 'numeric', min: '1', max: '28', class: 'num', value: String(d.startDay), oninput: e => { d.startDay = Math.min(28, Math.max(1, Math.round(Number(e.target.value) || 1))); } }), h('span', { class: 'small' }, '1なら毎月1日〜月末')),
+        h('label', { class: 'f', for: 's-day' }, '月の始まりの日', h('input', { id: 's-day', type: 'number', inputmode: 'numeric', min: '1', max: '28', class: 'num', value: String(d.startDay), oninput: e => { d.startDay = Math.min(28, Math.max(1, Math.round(Number(e.target.value) || 1))); } }), h('span', { class: 'small' }, '7なら7日〜翌6日。ホームの期間をタップしても変えられます'))),
+      h('div', { class: 'two' },
         h('label', { class: 'f', for: 's-start' }, '記録を始めた月', h('input', { id: 's-start', type: 'month', value: startMonth(), onchange: e => { if (/^\d{4}-\d{2}$/.test(e.target.value)) d.startMonth = e.target.value; } }))),
       h('div', { class: 'two' },
         h('label', { class: 'f', for: 's-pa' }, '1人目の呼び名', h('input', { id: 's-pa', maxlength: '12', value: d.people.a, oninput: e => { d.people.a = e.target.value; } })),

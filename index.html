@@ -137,6 +137,8 @@ tr.proj td{color:var(--muted)}
 @media (prefers-reduced-motion:reduce){.spin{animation:none}}
 
 nav[hidden]{display:none}
+.periodbtn{background:none;border:0;padding:4px 8px;border-radius:10px;color:var(--ink)}
+.periodbtn:active{background:var(--accent-soft)}
 /* join screen */
 .join{min-height:100%;display:grid;align-content:center;gap:16px;padding:24px 0}
 .join h1{font-size:26px;font-weight:900}
@@ -149,7 +151,7 @@ nav[hidden]{display:none}
 <body>
 <main id="app"><p style="padding:40px 0;text-align:center;color:#5a6a64">読み込み中…</p></main>
 <nav aria-label="メニュー" id="nav" hidden><div class="in" id="tabs"></div></nav>
-<script src="firebase-config.js"></script>
-<script type="module" src="app.js"></script>
+<script src="firebase-config.js?v=4"></script>
+<script type="module" src="app.js?v=4"></script>
 </body>
 </html>
